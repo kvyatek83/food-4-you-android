@@ -51,6 +51,7 @@ android {
 
 dependencies {
     implementation(libs.stario10)
+    implementation(libs.okhttp3)
     implementation(libs.gson)
 
     implementation(libs.androidx.core.ktx)
