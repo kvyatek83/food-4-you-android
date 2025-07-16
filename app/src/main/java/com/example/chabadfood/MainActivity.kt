@@ -10,11 +10,13 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
+import com.airbnb.lottie.LottieAnimationView
 import com.google.gson.Gson
 import com.starmicronics.stario10.InterfaceType
 import com.starmicronics.stario10.StarConnectionSettings
@@ -47,16 +49,18 @@ class MainActivity : ComponentActivity() {
     private val RECEIPT_WIDTH = 576
     private val FONT_SCALE = 1.6f
     private lateinit var webView: WebView
+    private lateinit var animationView: LottieAnimationView
+    private lateinit var animationContainer: View
     private lateinit var sharedPreferences: SharedPreferences
     private val TAG = "ReceiptPrinter"
 
     // Configuration properties
     private var printerIp: String = "192.168.68.51" // Default fallback
     private var printerEnabled: Boolean = true
-    private var serverUrl: String = "http://192.168.68.59:3311" // Default fallback
-    private var webViewUrl: String = "http://192.168.68.59:12345" // Will be fetched from server
+    private var serverUrl: String = "https://food-4-u-chabad-antigua.work" // Default fallback
+    private var webViewUrl: String = "https://food-4-u-chabad-antigua.work" // Will be fetched from server
     private var authToken: String? = null
-
+    
     // Monitoring properties
     private var lastPrinterStatus: Boolean = false
     private var lastErrorMessage: String? = null
@@ -71,33 +75,161 @@ class MainActivity : ComponentActivity() {
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
 
+    // Logging functionality
+    private fun logToServer(level: String, message: String, meta: Map<String, Any> = emptyMap()) {
+        if (authToken == null) {
+            Log.d(TAG, "No auth token - logging locally: [$level] $message")
+            return
+        }
+
+        printerScope.launch {
+            try {
+                val logData = JSONObject().apply {
+                    put("source", "android")
+                    put("level", level)
+                    put("message", message)
+                    put("meta", JSONObject().apply {
+                        meta.forEach { (key, value) ->
+                            put(key, value)
+                        }
+                        put("timestamp", System.currentTimeMillis())
+                        put("deviceInfo", JSONObject().apply {
+                            put("model", android.os.Build.MODEL)
+                            put("manufacturer", android.os.Build.MANUFACTURER)
+                            put("androidVersion", android.os.Build.VERSION.RELEASE)
+                            put("appVersion", "1.0.0")
+                        })
+                    })
+                }
+
+                val requestBody = logData.toString().toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("$serverUrl/api/logs/client-log")
+                    .header("authorization", authToken!!)
+                    .post(requestBody)
+                    .build()
+
+                httpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        Log.w(TAG, "Failed to send log to server: ${response.code}")
+                    }
+                }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending log to server", e)
+            }
+        }
+    }
+
+    // Convenience logging methods
+    private fun logError(message: String, error: Throwable? = null, meta: Map<String, Any> = emptyMap()) {
+        val enrichedMeta = meta.toMutableMap()
+        error?.let {
+            enrichedMeta["error"] = mapOf(
+                "message" to it.message,
+                "type" to it.javaClass.simpleName,
+                "stackTrace" to it.stackTraceToString()
+            )
+        }
+        logToServer("error", message, enrichedMeta)
+    }
+
+    private fun logInfo(message: String, meta: Map<String, Any> = emptyMap()) {
+        logToServer("info", message, meta)
+    }
+
+    private fun logWarn(message: String, meta: Map<String, Any> = emptyMap()) {
+        logToServer("warn", message, meta)
+    }
+
+    private fun logDebug(message: String, meta: Map<String, Any> = emptyMap()) {
+        logToServer("debug", message, meta)
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Ensure no splash screen and immediate content display
+        window.setFlags(
+            android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        )
+        
         setContentView(R.layout.activity_main)
 
         sharedPreferences = getSharedPreferences("printer_config", MODE_PRIVATE)
 
+        // Log application startup
+        logInfo("Application starting", mapOf(
+            "event" to "app_startup",
+            "deviceModel" to android.os.Build.MODEL,
+            "androidVersion" to android.os.Build.VERSION.RELEASE,
+            "appVersion" to "1.0.0"
+        ))
+
+        // Clear old cached configuration to use new defaults
+        clearOldConfiguration()
+        
         loadLocalConfiguration()
         setupWebView()
         initializePrinter()
 
         // Start monitoring only if we have a token
         if (authToken != null) {
+            logInfo("Starting periodic tasks - token available", mapOf(
+                "event" to "periodic_tasks_start",
+                "reason" to "token_available"
+            ))
             startPeriodicTasks()
             fetchServerConfiguration()
+        } else {
+            logInfo("Skipping periodic tasks - no token", mapOf(
+                "event" to "periodic_tasks_skip",
+                "reason" to "no_token"
+            ))
         }
+    }
+
+    private fun clearOldConfiguration() {
+        // Clear old IP configurations to force use of new defaults
+        val editor = sharedPreferences.edit()
+        
+        // Check if we have old server URLs and clear them
+        val currentServerUrl = sharedPreferences.getString("server_url", null)
+        val currentWebViewUrl = sharedPreferences.getString("webview_url", null)
+        
+        if (currentServerUrl != null && currentServerUrl.contains(" http://192.168.68.55:3311")) {
+            Log.d(TAG, "Clearing old server URL: $currentServerUrl")
+            editor.remove("server_url")
+        }
+        
+        if (currentWebViewUrl != null && currentWebViewUrl.contains(" http://192.168.68.55:12345")) {
+            Log.d(TAG, "Clearing old WebView URL: $currentWebViewUrl")
+            editor.remove("webview_url")
+        }
+        
+        editor.apply()
     }
 
     private fun loadLocalConfiguration() {
         printerIp = sharedPreferences.getString("printer_ip", "192.168.68.51") ?: "192.168.68.51"
         printerEnabled = sharedPreferences.getBoolean("printer_enabled", true)
-        serverUrl = sharedPreferences.getString("server_url", "http://192.168.68.59:3311") ?: "http://192.168.68.59:3311"
-        webViewUrl = sharedPreferences.getString("webview_url", "http://192.168.68.59:12345") ?: "http://192.168.68.59:12345"
+        serverUrl = sharedPreferences.getString("server_url", "https://food-4-u-chabad-antigua.work") ?: "https://food-4-u-chabad-antigua.work"
+        webViewUrl = sharedPreferences.getString("webview_url", "https://food-4-u-chabad-antigua.work") ?: "https://food-4-u-chabad-antigua.work"
         authToken = sharedPreferences.getString("auth_token", null)
 
         Log.d(TAG, "Loaded local config - IP: $printerIp, Enabled: $printerEnabled, Server: $serverUrl")
         Log.d(TAG, "Auth token available: ${authToken != null}")
+
+        logInfo("Local configuration loaded", mapOf(
+            "event" to "config_loaded",
+            "printerIp" to printerIp,
+            "printerEnabled" to printerEnabled,
+            "serverUrl" to serverUrl,
+            "webViewUrl" to webViewUrl,
+            "hasAuthToken" to (authToken != null)
+        ))
     }
 
     private fun saveLocalConfiguration() {
@@ -116,6 +248,11 @@ class MainActivity : ComponentActivity() {
         authToken = token
         saveLocalConfiguration()
 
+        logInfo("Authentication token received", mapOf(
+            "event" to "token_received",
+            "hasToken" to true
+        ))
+
         // Start monitoring and configuration fetching now that we have a token
         if (!isMonitoringActive()) {
             startPeriodicTasks()
@@ -125,6 +262,12 @@ class MainActivity : ComponentActivity() {
 
     private fun onTokenCleared() {
         Log.d(TAG, "Token cleared - user logged out")
+
+        logInfo("Authentication token cleared", mapOf(
+            "event" to "token_cleared",
+            "reason" to "user_logout"
+        ))
+
         authToken = null
         saveLocalConfiguration()
 
@@ -154,6 +297,11 @@ class MainActivity : ComponentActivity() {
                 // First, test basic connectivity
                 Log.d(TAG, "Fetching configuration from: $serverUrl")
 
+                logDebug("Fetching server configuration", mapOf(
+                    "serverUrl" to serverUrl,
+                    "event" to "config_fetch_start"
+                ))
+
                 val request = Request.Builder()
                     .url("$serverUrl/api/traveler/printer-config")
                     .header("authorization", authToken!!)
@@ -171,6 +319,8 @@ class MainActivity : ComponentActivity() {
 
                             // Update configuration from server
                             var configChanged = false
+                            val oldPrinterIp = printerIp
+                            val oldPrinterEnabled = printerEnabled
 
                             if (config.has("printerIp")) {
                                 val newIp = config.getString("printerIp")
@@ -194,23 +344,41 @@ class MainActivity : ComponentActivity() {
                                     initializePrinter()
                                 }
                                 Log.d(TAG, "Configuration updated from server")
-                            } else {
 
+                                logInfo("Configuration updated from server", mapOf(
+                                    "event" to "config_updated",
+                                    "changes" to mapOf(
+                                        "printerIp" to mapOf("old" to oldPrinterIp, "new" to printerIp),
+                                        "printerEnabled" to mapOf("old" to oldPrinterEnabled, "new" to printerEnabled)
+                                    )
+                                ))
                             }
                         } catch (e: JSONException) {
                             Log.e(TAG, "Failed to parse config JSON. Response was: $responseBody", e)
+                            logError("Failed to parse configuration JSON", e, mapOf(
+                                "event" to "config_parse_error",
+                                "responseBody" to (responseBody ?: "null")
+                            ))
                         }
                     } else {
                         Log.w(TAG, "Config request failed with code: ${response.code}, body: $responseBody")
+                        logWarn("Configuration request failed", mapOf(
+                            "event" to "config_request_failed",
+                            "statusCode" to response.code,
+                            "responseBody" to (responseBody ?: "null")
+                        ))
+
                         if (response.code == 401 || response.code == 403) {
                             // Token expired or invalid - notify Angular to re-authenticate
                             Log.w(TAG, "Token expired or invalid - clearing token")
+                            logWarn("Authentication token expired", mapOf(
+                                "event" to "token_expired",
+                                "statusCode" to response.code
+                            ))
                             withContext(Dispatchers.Main) {
                                 webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('androidTokenExpired'));", null)
                             }
                             onTokenCleared()
-                        } else {
-
                         }
                     }
                 }
@@ -234,31 +402,45 @@ class MainActivity : ComponentActivity() {
                                 if (env.has("webViewUrl")) {
                                     val newWebViewUrl = env.getString("webViewUrl")
                                     if (newWebViewUrl != webViewUrl && newWebViewUrl.isNotEmpty()) {
+                                        val oldUrl = webViewUrl
                                         webViewUrl = newWebViewUrl
                                         saveLocalConfiguration()
                                         Log.d(TAG, "WebView URL updated: $webViewUrl")
+
+                                        logInfo("WebView URL updated", mapOf(
+                                            "event" to "webview_url_updated",
+                                            "oldUrl" to oldUrl,
+                                            "newUrl" to webViewUrl
+                                        ))
 
                                         // Reload WebView with new URL
                                         withContext(Dispatchers.Main) {
                                             webView.loadUrl(webViewUrl)
                                         }
-                                    } else {
-
                                     }
-                                } else {
-
                                 }
                             } catch (e: JSONException) {
                                 Log.e(TAG, "Failed to parse env JSON. Response was: $responseBody", e)
+                                logError("Failed to parse environment JSON", e, mapOf(
+                                    "event" to "env_parse_error",
+                                    "responseBody" to (responseBody ?: "null")
+                                ))
                             }
                         } else {
                             Log.w(TAG, "Env request failed with code: ${response.code}, body: $responseBody")
+                            logWarn("Environment request failed", mapOf(
+                                "event" to "env_request_failed",
+                                "statusCode" to response.code
+                            ))
                         }
                     }
                 }
 
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to fetch server configuration", e)
+                Log.e(TAG, e.message, e)
+                logError("Failed to fetch server configuration", e, mapOf(
+                    "event" to "config_fetch_error"
+                ))
             }
         }
     }
@@ -311,9 +493,19 @@ class MainActivity : ComponentActivity() {
                 true
             } catch (e: StarIO10CommunicationException) {
                 Log.w(TAG, "Printer communication error: ${e.message}")
+                logWarn("Printer status check - communication error", mapOf(
+                    "event" to "printer_status_check_comm_error",
+                    "printerIp" to printerIp.toString(),
+                    "error" to e.message.toString()
+                ))
                 false
             } catch (e: Exception) {
                 Log.w(TAG, "Printer check error: ${e.message}")
+                logWarn("Printer status check - general error", mapOf(
+                    "event" to "printer_status_check_error",
+                    "printerIp" to printerIp.toString(),
+                    "error" to e.message.toString()
+                ))
                 false
             }
 
@@ -324,6 +516,13 @@ class MainActivity : ComponentActivity() {
                 reportStatusToServer(isAvailable, errorMessage)
                 lastPrinterStatus = isAvailable
                 lastErrorMessage = errorMessage
+
+                logInfo("Printer status changed", mapOf(
+                    "event" to "printer_status_changed",
+                    "printerIp" to printerIp.toString(),
+                    "available" to isAvailable.toString(),
+                    "errorMessage" to errorMessage.toString()
+                ))
             }
 
         } catch (e: Exception) {
@@ -332,6 +531,11 @@ class MainActivity : ComponentActivity() {
             if (errorMsg != lastErrorMessage) {
                 reportStatusToServer(false, errorMsg)
                 lastErrorMessage = errorMsg
+
+                logError("Printer status check failed", e, mapOf(
+                    "event" to "printer_status_check_failed",
+                    "printerIp" to printerIp
+                ))
             }
         }
     }
@@ -382,12 +586,83 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun setupWebView() {
-        webView = findViewById<WebView>(R.id.webview)
+        webView = findViewById(R.id.webview)
+        animationView = findViewById(R.id.opening_animation)
+        animationContainer = findViewById(R.id.animation_container)
+
+        // Add a fallback timeout in case animation doesn't start or complete
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (animationContainer.visibility == View.VISIBLE) {
+                Log.w(TAG, "Animation timeout - switching to WebView")
+                animationContainer.visibility = View.GONE
+                webView.visibility = View.VISIBLE
+                webView.loadUrl(webViewUrl)
+            }
+        }, 5000) // 5 second timeout
+
+        // Setup Lottie animation completion listener
+        animationView.addAnimatorListener(object : android.animation.Animator.AnimatorListener {
+            override fun onAnimationStart(animation: android.animation.Animator) {
+                Log.d(TAG, "Lottie animation started")
+                logInfo("Opening animation started", mapOf(
+                    "event" to "animation_started"
+                ))
+            }
+
+            override fun onAnimationEnd(animation: android.animation.Animator) {
+                Log.d(TAG, "Lottie animation completed")
+                logInfo("Opening animation completed", mapOf(
+                    "event" to "animation_completed"
+                ))
+                
+                // Hide animation and show WebView
+                animationContainer.visibility = View.GONE
+                webView.visibility = View.VISIBLE
+                
+                // Load the WebView URL after animation completes
+                logInfo("Loading WebView URL after animation", mapOf(
+                    "event" to "webview_loading_post_animation",
+                    "url" to webViewUrl
+                ))
+                webView.loadUrl(webViewUrl)
+            }
+
+            override fun onAnimationCancel(animation: android.animation.Animator) {
+                Log.d(TAG, "Lottie animation cancelled")
+                // Fallback: show WebView anyway
+                animationContainer.visibility = View.GONE
+                webView.visibility = View.VISIBLE
+                webView.loadUrl(webViewUrl)
+            }
+
+            override fun onAnimationRepeat(animation: android.animation.Animator) {
+                // Not used for non-looping animation
+            }
+        })
+
+        // Also try to manually start the animation if it's not auto-playing
+        if (!animationView.isAnimating) {
+            animationView.playAnimation()
+        }
 
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 Log.d(TAG, "WebView page loaded: $url")
+                logInfo("WebView page loaded", mapOf(
+                    "event" to "webview_page_loaded",
+                    "url" to (url ?: "unknown")
+                ))
+            }
+
+            override fun onReceivedError(view: WebView?, errorCode: Int, description: String?, failingUrl: String?) {
+                super.onReceivedError(view, errorCode, description, failingUrl)
+                logError("WebView error occurred", null, mapOf(
+                    "event" to "webview_error",
+                    "errorCode" to errorCode,
+                    "description" to (description ?: "unknown"),
+                    "failingUrl" to (failingUrl ?: "unknown")
+                ))
             }
         }
 
@@ -402,13 +677,20 @@ class MainActivity : ComponentActivity() {
         WebView.setWebContentsDebuggingEnabled(true)
         webView.addJavascriptInterface(WebAppInterface(), "AndroidPrinter")
 
-        // Load the WebView URL
-        webView.loadUrl(webViewUrl)
+        logInfo("WebView configured", mapOf(
+            "event" to "webview_configured",
+            "javascriptEnabled" to true,
+            "debuggingEnabled" to true
+        ))
     }
 
     private fun initializePrinter() {
         if (!printerEnabled) {
             Log.d(TAG, "Printer is disabled in configuration")
+            logInfo("Printer initialization skipped - disabled in configuration", mapOf(
+                "event" to "printer_init_skipped",
+                "reason" to "disabled"
+            ))
             printer = null
             return
         }
@@ -417,8 +699,18 @@ class MainActivity : ComponentActivity() {
             val settings = StarConnectionSettings(InterfaceType.Lan, printerIp, false)
             printer = StarPrinter(settings, applicationContext)
             Log.d(TAG, "Printer initialized with IP: $printerIp")
+
+            logInfo("Printer initialized successfully", mapOf(
+                "event" to "printer_initialized",
+                "printerIp" to printerIp,
+                "interfaceType" to "LAN"
+            ))
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize printer", e)
+            logError("Failed to initialize printer", e, mapOf(
+                "event" to "printer_init_failed",
+                "printerIp" to printerIp
+            ))
             printer = null
         }
     }
@@ -468,15 +760,32 @@ class MainActivity : ComponentActivity() {
         fun printReceipt(receiptDataJson: String): String {
             Log.d(TAG, "Print request received")
 
+            logInfo("Print request received", mapOf(
+                "event" to "print_request_received",
+                "dataSize" to receiptDataJson.length
+            ))
+
             if (authToken == null) {
+                logWarn("Print request rejected - no authentication", mapOf(
+                    "event" to "print_request_rejected",
+                    "reason" to "no_auth_token"
+                ))
                 return createErrorResponse("Not authenticated - please log in first")
             }
 
             if (!printerEnabled) {
+                logWarn("Print request rejected - printer disabled", mapOf(
+                    "event" to "print_request_rejected",
+                    "reason" to "printer_disabled"
+                ))
                 return createErrorResponse("Printer is disabled")
             }
 
             if (printer == null) {
+                logError("Print request rejected - printer not initialized", null, mapOf(
+                    "event" to "print_request_rejected",
+                    "reason" to "printer_not_initialized"
+                ))
                 return createErrorResponse("Printer not initialized")
             }
 
@@ -487,9 +796,16 @@ class MainActivity : ComponentActivity() {
                     // Report print result to server
                     reportPrintResultToServer(result)
                 }
+
+                logInfo("Print job submitted successfully", mapOf(
+                    "event" to "print_job_submitted"
+                ))
                 return createSuccessResponse("Print job submitted")
             } catch (e: Exception) {
                 Log.e(TAG, "Error processing print request", e)
+                logError("Error processing print request", e, mapOf(
+                    "event" to "print_request_error"
+                ))
                 return createErrorResponse(e.message ?: "Unknown error")
             }
         }
@@ -498,15 +814,31 @@ class MainActivity : ComponentActivity() {
         fun testPrinter(): String {
             Log.d(TAG, "Test print requested")
 
+            logInfo("Test print requested", mapOf(
+                "event" to "test_print_requested"
+            ))
+
             if (authToken == null) {
+                logWarn("Test print rejected - no authentication", mapOf(
+                    "event" to "test_print_rejected",
+                    "reason" to "no_auth_token"
+                ))
                 return createErrorResponse("Not authenticated - please log in first")
             }
 
             if (!printerEnabled) {
+                logWarn("Test print rejected - printer disabled", mapOf(
+                    "event" to "test_print_rejected",
+                    "reason" to "printer_disabled"
+                ))
                 return createErrorResponse("Printer is disabled")
             }
 
             if (printer == null) {
+                logError("Test print rejected - printer not initialized", null, mapOf(
+                    "event" to "test_print_rejected",
+                    "reason" to "printer_not_initialized"
+                ))
                 return createErrorResponse("Printer not initialized")
             }
 
@@ -516,6 +848,9 @@ class MainActivity : ComponentActivity() {
                 reportPrintResultToServer(result, isTest = true)
             }
 
+            logInfo("Test print job submitted", mapOf(
+                "event" to "test_print_submitted"
+            ))
             return createSuccessResponse("Test print initiated")
         }
 
@@ -599,21 +934,48 @@ class MainActivity : ComponentActivity() {
 
     private suspend fun printReceiptFromData(receiptData: ReceiptData): PrintResult {
         if (printer == null) {
-            return PrintResult(false, "Printer not initialized", "NO_PRINTER")
+            val result = PrintResult(false, "Printer not initialized", "NO_PRINTER")
+            logError("Print failed - printer not initialized", null, mapOf(
+                "event" to "print_failed",
+                "errorCode" to "NO_PRINTER"
+            ))
+            return result
         }
 
         return try {
+            logDebug("Starting print operation", mapOf(
+                "event" to "print_operation_start",
+                "printerIp" to printerIp
+            ))
+
             val receiptBitmap = createReceiptBitmap(receiptData)
 
             try {
                 printer!!.openAsync().await()
                 Log.i(TAG, "Connected to printer successfully")
+
+                logInfo("Printer connection established", mapOf(
+                    "event" to "printer_connected",
+                    "printerIp" to printerIp
+                ))
             } catch (e: StarIO10CommunicationException) {
                 Log.e(TAG, "Communication error: ${e.message}")
-                return PrintResult(false, "Communication error: ${e.message}", "COMMUNICATION_ERROR")
+                val result = PrintResult(false, "Communication error: ${e.message}", "COMMUNICATION_ERROR")
+                logError("Printer communication error", e, mapOf(
+                    "event" to "printer_communication_error",
+                    "printerIp" to printerIp,
+                    "errorCode" to "COMMUNICATION_ERROR"
+                ))
+                return result
             } catch (e: Exception) {
                 Log.e(TAG, "Connection error: ${e.message}")
-                return PrintResult(false, "Connection error: ${e.message}", "CONNECTION_ERROR")
+                val result = PrintResult(false, "Connection error: ${e.message}", "CONNECTION_ERROR")
+                logError("Printer connection error", e, mapOf(
+                    "event" to "printer_connection_error",
+                    "printerIp" to printerIp,
+                    "errorCode" to "CONNECTION_ERROR"
+                ))
+                return result
             }
 
             try {
@@ -629,7 +991,13 @@ class MainActivity : ComponentActivity() {
 
                 printer!!.printAsync(commands).await()
                 Log.i(TAG, "Print completed successfully")
-                PrintResult(true, "Print completed successfully", null)
+
+                val result = PrintResult(true, "Print completed successfully", null)
+                logInfo("Print completed successfully", mapOf(
+                    "event" to "print_completed",
+                    "printerIp" to printerIp
+                ))
+                result
 
             } catch (e: StarIO10UnprintableException) {
                 val errorMessage = when (e.errorCode) {
@@ -638,23 +1006,51 @@ class MainActivity : ComponentActivity() {
                     else -> "Printing error: ${e.message}"
                 }
                 Log.e(TAG, errorMessage)
-                PrintResult(false, errorMessage, e.errorCode.toString())
+                val result = PrintResult(false, errorMessage, e.errorCode.toString())
+                logError("Print operation failed", e, mapOf(
+                    "event" to "print_operation_failed",
+                    "printerIp" to printerIp,
+                    "errorCode" to e.errorCode.toString(),
+                    "starErrorCode" to e.errorCode.name
+                ))
+                result
 
             } catch (e: Exception) {
                 Log.e(TAG, "Print exception: ${e.message}")
-                PrintResult(false, "Print failed: ${e.message}", "PRINT_ERROR")
+                val result = PrintResult(false, "Print failed: ${e.message}", "PRINT_ERROR")
+                logError("Print exception occurred", e, mapOf(
+                    "event" to "print_exception",
+                    "printerIp" to printerIp,
+                    "errorCode" to "PRINT_ERROR"
+                ))
+                result
 
             } finally {
                 try {
                     printer!!.closeAsync().await()
                     Log.i(TAG, "Connection closed")
+                    logDebug("Printer connection closed", mapOf(
+                        "event" to "printer_connection_closed",
+                        "printerIp" to printerIp
+                    ))
                 } catch (e: Exception) {
                     Log.w(TAG, "Error closing connection", e)
+                    logWarn("Error closing printer connection", mapOf(
+                        "event" to "printer_connection_close_error",
+                        "printerIp" to printerIp.toString(),
+                        "error" to e.message.toString()
+                    ))
                 }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error in printReceiptFromData", e)
-            PrintResult(false, "Unexpected error: ${e.message}", "UNEXPECTED_ERROR")
+            val result = PrintResult(false, "Unexpected error: ${e.message}", "UNEXPECTED_ERROR")
+            logError("Unexpected print error", e, mapOf(
+                "event" to "print_unexpected_error",
+                "printerIp" to printerIp,
+                "errorCode" to "UNEXPECTED_ERROR"
+            ))
+            result
         }
     }
 
@@ -1002,6 +1398,10 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         statusHandler.removeCallbacksAndMessages(null)
         configHandler.removeCallbacksAndMessages(null)
+
+        logInfo("Application shutting down", mapOf(
+            "event" to "app_shutdown"
+        ))
     }
 
     private data class ReceiptLine(

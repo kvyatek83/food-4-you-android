@@ -1,5 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.ChabadFood" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.ChabadFood" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- Disable Android 12+ splash screen -->
+        <item name="android:windowSplashScreenBackground">@android:color/white</item>
+        <item name="android:windowSplashScreenAnimationDuration">0</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@android:color/white</item>
+        <item name="android:windowSplashScreenBrandingImage">@null</item>
+        
+        <!-- Ensure immediate content display -->
+        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+    </style>
+
 </resources>

@@ -52,7 +52,11 @@ android {
 dependencies {
     implementation(libs.stario10)
     implementation(libs.okhttp3)
+    implementation(libs.lottie)
     implementation(libs.gson)
+
+    // AppCompat for LottieAnimationView
+    implementation("androidx.appcompat:appcompat:1.6.1")
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
