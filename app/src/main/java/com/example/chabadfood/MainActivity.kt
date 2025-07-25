@@ -191,6 +191,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        Log.d(TAG, "Configuration changed - handling without restart")
+        
+        // Handle configuration changes (like screen rotation) without restarting
+        // The activity will continue running normally
+    }
+
     private fun clearOldConfiguration() {
         // Clear old IP configurations to force use of new defaults
         val editor = sharedPreferences.edit()
@@ -198,7 +206,7 @@ class MainActivity : ComponentActivity() {
         // Check if we have old server URLs and clear them
         val currentServerUrl = sharedPreferences.getString("server_url", null)
         val currentWebViewUrl = sharedPreferences.getString("webview_url", null)
-        
+
         if (currentServerUrl != null && currentServerUrl.contains(" http://192.168.68.55:3311")) {
             Log.d(TAG, "Clearing old server URL: $currentServerUrl")
             editor.remove("server_url")
