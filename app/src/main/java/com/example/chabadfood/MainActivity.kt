@@ -1144,7 +1144,6 @@ class MainActivity : ComponentActivity() {
         val centerX = RECEIPT_WIDTH / 2f
         val leftMargin = 20f
         val rightMargin = RECEIPT_WIDTH - 20f
-        val dividerSpacing = 20f
 
         // Header - Chabad Antigua (centered, bigger)
         receiptData.headerInfo?.storeName?.let { storeName ->
@@ -1162,15 +1161,12 @@ class MainActivity : ComponentActivity() {
         receiptData.date?.let { date ->
             val formattedDate = formatDateForReceipt(date)
             canvas.drawText(formattedDate, centerX, yPosition, datePaint)
-            yPosition += lineHeight + 25f // More space after date
+            yPosition += lineHeight + 20f // Space after date
         }
 
-        // First divider line
-        yPosition += dividerSpacing
-        drawDividerLine(canvas, yPosition, leftMargin, rightMargin)
-        yPosition += dividerSpacing
-
         // Customer name and order type (bold, with even spacing)
+        yPosition += 20f // Extra space before customer info
+        
         receiptData.customerInfo?.let { customerInfo ->
             val customerText = customerInfo.name ?: ""
             val orderTypeText = customerInfo.orderType ?: ""
@@ -1181,26 +1177,24 @@ class MainActivity : ComponentActivity() {
 
             canvas.drawText(customerText, leftMargin, yPosition, boldPaint)
             canvas.drawText(orderTypeText, rightMargin - orderTypeWidth, yPosition, boldPaint)
-            yPosition += lineHeight + 15f
+            yPosition += lineHeight + 25f // More space after customer info
         }
+        
+        yPosition += 15f // Extra space after customer info
 
-        // Second divider line
-        yPosition += dividerSpacing
-        drawDividerLine(canvas, yPosition, leftMargin, rightMargin)
-        yPosition += dividerSpacing
-
-        // Items list with new formatting
+        // Items list with bullets - add space before items
+        yPosition += 15f // Extra space before item list
+        
         receiptData.items?.forEach { item ->
-            yPosition = drawItemWithWrapping(canvas, item, yPosition, leftMargin, rightMargin, normalPaint, lineHeight)
-            yPosition += 15f // Extra space between items
+            yPosition = drawItemWithBullet(canvas, item, yPosition, leftMargin, rightMargin, normalPaint, lineHeight)
+            yPosition += 15f // More space between items
         }
-
-        // Third divider line
-        yPosition += dividerSpacing
-        drawDividerLine(canvas, yPosition, leftMargin, rightMargin)
-        yPosition += dividerSpacing
+        
+        yPosition += 20f // Extra space after item list
 
         // Total (bold, with even spacing)
+        yPosition += 20f // Extra space before total
+        
         val totalLabel = "TOTAL"
         val totalAmount = "${receiptData.total?.let { "%.2f".format(it) } ?: "0.00"} GTQ"
 
@@ -1208,12 +1202,9 @@ class MainActivity : ComponentActivity() {
 
         canvas.drawText(totalLabel, leftMargin, yPosition, boldPaint)
         canvas.drawText(totalAmount, rightMargin - totalAmountWidth, yPosition, boldPaint)
-        yPosition += lineHeight + 20f
-
-        // Fourth divider line
-        yPosition += dividerSpacing
-        drawDividerLine(canvas, yPosition, leftMargin, rightMargin)
-        yPosition += dividerSpacing
+        yPosition += lineHeight + 20f // Space after total
+        
+        yPosition += 15f // Extra space after total
 
         // Payment status (centered, bold)
         receiptData.paymentInfo?.status?.let { status ->
@@ -1221,14 +1212,14 @@ class MainActivity : ComponentActivity() {
             yPosition += lineHeight + 20f
         }
 
-        // Bon Appétit (centered, bold)
+        // Bon Appétit (centered, bold) - Footer restored
         canvas.drawText("Bon Appétit", centerX, yPosition, centerPaint)
-        yPosition += lineHeight + 60f // Much more space after Bon Appétit like header
+        yPosition += lineHeight + 40f // Space after Bon Appétit
 
         return bitmap
     }
 
-    private fun drawItemWithWrapping(
+    private fun drawItemWithBullet(
         canvas: Canvas,
         item: ItemInfo,
         startY: Float,
@@ -1239,7 +1230,8 @@ class MainActivity : ComponentActivity() {
     ): Float {
         var yPosition = startY
         val maxWidth = rightMargin - leftMargin
-        val addOnIndent = 40f // Indentation for "con" lines
+        val bulletWidth = 20f // Width for the bullet point
+        val bulletIndent = 10f // Indentation for the bullet point
 
         // Get item name and add-ons
         val itemName = item.description ?: ""
@@ -1258,14 +1250,15 @@ class MainActivity : ComponentActivity() {
         val mainItemName = parts.first
         val itemAddOns = parts.second
 
-        // Draw main item name with wrapping
-        yPosition = drawTextWithWrapping(canvas, mainItemName, leftMargin, yPosition, maxWidth, paint, lineHeight)
+        // Draw bullet point and main item name on the same line
+        canvas.drawText("•", leftMargin + bulletIndent, yPosition, paint)
+        yPosition = drawTextWithWrapping(canvas, mainItemName, leftMargin + bulletWidth + bulletIndent, yPosition, maxWidth - bulletWidth, paint, lineHeight)
 
         // Draw add-ons with indentation
         itemAddOns.forEach { addOn ->
             if (addOn.isNotEmpty()) {
                 val addOnText = "    con $addOn"
-                yPosition = drawTextWithWrapping(canvas, addOnText, leftMargin, yPosition, maxWidth, paint, lineHeight)
+                yPosition = drawTextWithWrapping(canvas, addOnText, leftMargin + bulletWidth + bulletIndent, yPosition, maxWidth - bulletWidth, paint, lineHeight)
             }
         }
 
@@ -1363,25 +1356,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun drawDividerLine(canvas: Canvas, y: Float, startX: Float, endX: Float) {
-        val linePaint = Paint().apply {
-            color = Color.BLACK
-            strokeWidth = 2f
-        }
-        canvas.drawLine(startX, y, endX, y, linePaint)
-    }
-
     private fun calculateReceiptHeight(receiptData: ReceiptData): Int {
-        // Base height for header, footer, and spacing (increased for better spacing)
-        var height = 400 // Increased for more header spacing and bottom margin
+        // Base height for header, footer, and spacing
+        var height = 400 // Increased for extra spacing around items
 
-        // Add height for each item (2 lines per item with more spacing)
+        // Add height for each item (with bullet formatting and extra spacing)
         receiptData.items?.let { items ->
-            height += items.size * 100 // 45 * 2 + 10 spacing per item
+            height += items.size * 90 // Increased for better spacing
         }
 
-        // Add extra space for dividers and margins (increased)
-        height += 250
+        // Add space for margins and spacing
+        height += 200 // Increased for extra spacing around item list
 
         return height
     }
